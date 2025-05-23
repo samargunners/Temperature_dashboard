@@ -87,7 +87,7 @@ alerts_df = dashboard_df[dashboard_df["Temperature (°C)"] > ALERT_TEMP_THRESHOL
 
 if not alerts_df.empty:
     print("⚠️ ALERT: Devices exceeding threshold:")
-    display(alerts_df)
+    print(alerts_df)
 else:
     print("✅ All devices are within safe temperature range.")
 
