@@ -1,71 +1,110 @@
-import streamlit as st
 import requests
 import pandas as pd
+import matplotlib.pyplot as plt
 from datetime import datetime
-import plotly.express as px
+import time
+import uuid
 
-# --- Setup ---
-API_KEY = st.secrets["GOVEE_API_KEY"]
+# --- CONFIG ---
+API_KEY = "f773607f-9d19-4b7d-b532-b291f1d1026b"
 BASE_URL = "https://openapi.api.govee.com/router/api/v1"
 HEADERS = {
     "Govee-API-Key": API_KEY,
     "Content-Type": "application/json"
 }
 
-st.set_page_config(layout="wide")
-st.title("🌡️ Govee Live Temperature Dashboard")
+ALERT_TEMP_THRESHOLD = 5.0  # degrees Celsius
 
-# --- Load Devices ---
-@st.cache_data(ttl=3600)
-def get_thermometers():
+# --- STEP 1: Get All Devices ---
+def get_all_devices():
     url = f"{BASE_URL}/user/devices"
-    res = requests.get(url, headers=HEADERS)
-    res.raise_for_status()
-    all_devices = res.json()["data"]
-    return [
-        d for d in all_devices
-        if any(cap.get("instance") == "temperature" for cap in d.get("capabilities", []))
-    ]
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
+    return response.json()["data"]
 
-devices = get_thermometers()
+# --- STEP 2: Filter Thermometers ---
+def extract_thermometers(device_list):
+    rows = []
+    for device in device_list:
+        capabilities = [cap["instance"] for cap in device.get("capabilities", [])]
+        if "sensorTemperature" in capabilities:
+            rows.append({
+                "Device Name": device.get("deviceName", device["device"]),
+                "Device ID": device["device"],
+                "SKU": device["sku"]
+            })
+    return pd.DataFrame(rows)
 
-# Add this after fetching devices
-st.subheader("🔍 Raw Device JSON")
-st.json(devices)  # Shows the full API response
-
-def is_thermometer(device):
-    for cap in device.get("capabilities", []):
-        # Check if capability instance or unit mentions temperature
-        if (
-            "temperature" in cap.get("instance", "").lower() or
-            "temperature" in str(cap.get("parameters", {}).get("unit", "")).lower()
-        ):
-            return True
-    return False
-
-thermometers = [d for d in devices if is_thermometer(d)]
-
-
-if not devices:
-    st.error("No thermometer devices found in your account.")
-else:
-    device_options = {
-        f"{d.get('deviceName', d['device'])} ({d['device']})": d["device"]
-        for d in devices
+# --- STEP 3: Get Real-Time Readings ---
+def get_device_state(device_id, sku):
+    url = f"{BASE_URL}/device/state"
+    payload = {
+        "requestId": str(uuid.uuid4()),
+        "payload": {
+            "device": device_id,
+            "sku": sku
+        }
     }
-    selected_label = st.selectbox("Select a Thermometer", list(device_options.keys()))
-    selected_device = device_options[selected_label]
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+        response.raise_for_status()
+        data = response.json().get("data", {})
+        temp = humidity = None
+        for prop in data.get("properties", []):
+            if prop["instance"] == "sensorTemperature":
+                temp = prop["value"]
+            elif prop["instance"] == "sensorHumidity":
+                humidity = prop["value"]
+        return temp, humidity
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP error: {e} → {response.text}")
+        return None, None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return None, None
 
-    # --- Placeholder for live data fetch (replace with correct endpoint when known) ---
-    st.subheader("Current Temperature (Placeholder)")
-    demo_temp = round(22 + (datetime.now().second % 10) * 0.1, 1)
-    st.metric("Temperature", f"{demo_temp} °C")
+# --- STEP 4: Compile Dashboard Table ---
+def build_dashboard_df(devices_df):
+    rows = []
+    for _, row in devices_df.iterrows():
+        temp, humidity = get_device_state(row["Device ID"], row["SKU"])
+        rows.append({
+            "Device Name": row["Device Name"],
+            "Temperature (°C)": temp,
+            "Humidity (%)": humidity,
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        time.sleep(1)  # Respect API limits
+    return pd.DataFrame(rows)
 
-    # --- Simulated history chart ---
-    st.subheader("📈 Temperature Trend (Simulated Data)")
-    history = pd.DataFrame({
-        "timestamp": pd.date_range(end=datetime.now(), periods=24, freq="H"),
-        "temperature": [round(22 + i % 5 * 0.3, 1) for i in range(24)]
-    })
-    fig = px.line(history, x="timestamp", y="temperature", title="24h Temperature History")
-    st.plotly_chart(fig, use_container_width=True)
+# --- STEP 5: Run Everything ---
+all_devices = get_all_devices()
+thermo_df = extract_thermometers(all_devices)
+dashboard_df = build_dashboard_df(thermo_df)
+
+# --- STEP 6: Display Alerting Table ---
+alerts_df = dashboard_df[dashboard_df["Temperature (°C)"] > ALERT_TEMP_THRESHOLD]
+
+if not alerts_df.empty:
+    print("⚠️ ALERT: Devices exceeding threshold:")
+    display(alerts_df)
+else:
+    print("✅ All devices are within safe temperature range.")
+
+# --- STEP 7: Plot Temperature Bar Chart with Alert Highlight ---
+dashboard_df_sorted = dashboard_df.sort_values("Temperature (°C)")
+
+# Color logic: red for alert, green for safe
+colors = [
+    "red" if temp > ALERT_TEMP_THRESHOLD else "green"
+    for temp in dashboard_df_sorted["Temperature (°C)"]
+]
+
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.barh(dashboard_df_sorted["Device Name"], dashboard_df_sorted["Temperature (°C)"], color=colors)
+ax.set_title("🌡️ Temperature by Device with Alerts")
+ax.set_xlabel("Temperature (°C)")
+ax.set_ylabel("Device")
+plt.grid(True, linestyle="--", alpha=0.5)
+plt.tight_layout()
+plt.show()
