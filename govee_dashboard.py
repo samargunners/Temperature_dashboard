@@ -29,6 +29,23 @@ def get_thermometers():
 
 devices = get_thermometers()
 
+# Add this after fetching devices
+st.subheader("🔍 Raw Device JSON")
+st.json(devices)  # Shows the full API response
+
+def is_thermometer(device):
+    for cap in device.get("capabilities", []):
+        # Check if capability instance or unit mentions temperature
+        if (
+            "temperature" in cap.get("instance", "").lower() or
+            "temperature" in str(cap.get("parameters", {}).get("unit", "")).lower()
+        ):
+            return True
+    return False
+
+thermometers = [d for d in devices if is_thermometer(d)]
+
+
 if not devices:
     st.error("No thermometer devices found in your account.")
 else:
