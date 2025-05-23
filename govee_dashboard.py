@@ -96,7 +96,7 @@ dashboard_df_sorted = dashboard_df.sort_values("Temperature (°C)")
 
 # Color logic: red for alert, green for safe
 colors = [
-    "red" if temp > ALERT_TEMP_THRESHOLD else "green"
+    "gray" if temp is None else ("red" if temp > ALERT_TEMP_THRESHOLD else "green")
     for temp in dashboard_df_sorted["Temperature (°C)"]
 ]
 
